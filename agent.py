@@ -18,7 +18,52 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract search parameters from a natural-language query using regex.
+
+    Returns a dict with:
+        description (str):        the query with size/price phrases stripped out
+        size (str | None):       e.g. "M", "8", "XXS" from "size M"
+        max_price (float | None): e.g. 30.0 from "under $30" or "$30"
+
+    Regex is used (rather than an LLM) because the parsing targets are simple,
+    well-bounded patterns — a price phrase and a size phrase — so a deterministic
+    parser is faster, free, and easier to test than an LLM call.
+    """
+    text = query.strip()
+    lower = text.lower()
+
+    # max_price: prefer an explicit "under/below/up to N", else any "$N".
+    max_price = None
+    m = re.search(r"(?:under|below|less than|max|up to|<)\s*\$?\s*(\d+(?:\.\d+)?)", lower)
+    if not m:
+        m = re.search(r"\$\s*(\d+(?:\.\d+)?)", lower)
+    if m:
+        max_price = float(m.group(1))
+
+    # size: the token following "size" (letters, digits, or slashes).
+    size = None
+    sm = re.search(r"\bsize\s+([a-z0-9/]+)", lower)
+    if sm:
+        size = sm.group(1).upper()
+
+    # description: the query with the price and size phrases removed.
+    desc = re.sub(
+        r"(?:under|below|less than|max|up to)\s*\$?\s*\d+(?:\.\d+)?", "", text, flags=re.I
+    )
+    desc = re.sub(r"\$\s*\d+(?:\.\d+)?", "", desc)
+    desc = re.sub(r"\b(?:in\s+)?size\s+[a-z0-9/]+", "", desc, flags=re.I)
+    desc = re.sub(r"\s+", " ", desc).strip()
+
+    return {"description": desc, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +137,50 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: fresh session for this interaction.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into search parameters.
+    parsed = _parse_query(query)
+    session["parsed"] = parsed
+
+    # Step 3: search. This is the single branch point of the loop.
+    results = search_listings(
+        description=parsed["description"],
+        size=parsed["size"],
+        max_price=parsed["max_price"],
+    )
+    session["search_results"] = results
+
+    if not results:
+        # ERROR BRANCH — stop here, do NOT call suggest_outfit/create_fit_card.
+        size_part = f" in size {parsed['size']}" if parsed["size"] else ""
+        price_part = (
+            f" under ${parsed['max_price']:.0f}" if parsed["max_price"] is not None else ""
+        )
+        session["error"] = (
+            f"No matches for '{parsed['description']}'{price_part}{size_part}. "
+            "Try raising your budget, removing the size filter, or using broader "
+            "keywords."
+        )
+        return session
+
+    # Step 4: select the top (most relevant) result.
+    session["selected_item"] = results[0]
+
+    # Step 5: suggest an outfit using the selected item + wardrobe.
+    session["outfit_suggestion"] = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+    )
+
+    # Step 6: write a shareable fit card from the outfit + item.
+    session["fit_card"] = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+
+    # Step 7: return the completed session.
     return session
 
 

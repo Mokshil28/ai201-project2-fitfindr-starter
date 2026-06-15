@@ -11,7 +11,13 @@ return a non-empty fallback string if no GROQ_API_KEY is set, so these tests
 pass with or without a live API key.
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import (
+    search_listings,
+    suggest_outfit,
+    create_fit_card,
+    _relevance_score,
+    _keywords,
+)
 from utils.data_loader import get_example_wardrobe, get_empty_wardrobe, load_listings
 
 
@@ -41,21 +47,23 @@ def test_search_size_filter_is_case_insensitive_substring():
 
 
 def test_search_sorted_by_relevance_descending():
-    # More specific keywords should still return results in non-increasing
-    # relevance; verify the first result is at least as relevant as the last
-    # by re-scoring on the shared keyword.
+    # Results must come back in non-increasing relevance order. Re-score with
+    # the same helper the implementation uses to avoid coupling to internals.
     results = search_listings("vintage denim", size=None, max_price=None)
     assert len(results) >= 2
-    keywords = ["vintage", "denim"]
-
-    def score(item):
-        hay = " ".join(
-            [item["title"], item["description"], " ".join(item["style_tags"])]
-        ).lower()
-        return sum(hay.count(k) for k in keywords)
-
-    scores = [score(r) for r in results]
+    keywords = _keywords("vintage denim")
+    scores = [_relevance_score(r, keywords) for r in results]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_search_ignores_filler_words():
+    # "looking for a" is filler — the top result for a graphic-tee query should
+    # be an actual graphic tee, not whatever has the most stray 'a' characters.
+    results = search_listings(
+        "looking for a vintage graphic tee", size=None, max_price=30
+    )
+    assert len(results) > 0
+    assert "graphic tee" in results[0]["style_tags"]
 
 
 def test_search_returns_full_listing_dicts():

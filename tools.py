@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -20,6 +21,38 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+
+# ── relevance scoring ─────────────────────────────────────────────────────────
+
+# Common filler words that carry no search signal. Dropping them stops queries
+# like "looking for a vintage tee" from being dominated by "a"/"for".
+_STOPWORDS = {
+    "a", "an", "the", "for", "and", "or", "of", "to", "in", "on", "with",
+    "my", "me", "i", "im", "i'm", "is", "it", "looking", "look", "want",
+    "wanting", "need", "find", "finding", "some", "any", "that", "this",
+    "under", "below", "size",
+}
+
+
+def _relevance_score(item: dict, keywords: list[str]) -> int:
+    """
+    Score a listing by how many times the query keywords appear, as whole
+    words, across its title, description, and style_tags.
+    """
+    haystack = " ".join(
+        [item["title"], item["description"], " ".join(item["style_tags"])]
+    ).lower()
+    score = 0
+    for kw in keywords:
+        score += len(re.findall(rf"\b{re.escape(kw)}\b", haystack))
+    return score
+
+
+def _keywords(description: str) -> list[str]:
+    """Tokenize a description into meaningful (non-stopword) lowercase keywords."""
+    tokens = re.findall(r"[a-z0-9']+", description.lower())
+    return [t for t in tokens if t not in _STOPWORDS]
 
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -71,8 +104,8 @@ def search_listings(
     """
     listings = load_listings()
 
-    # Keyword tokens from the description, lowercased.
-    keywords = [w for w in description.lower().split() if w]
+    # Meaningful keyword tokens (stopwords removed).
+    keywords = _keywords(description)
 
     size_filter = size.lower().strip() if size else None
 
@@ -87,11 +120,8 @@ def search_listings(
         if size_filter is not None and size_filter not in item["size"].lower():
             continue
 
-        # 3. Score by keyword overlap across title, description, and style_tags.
-        haystack = " ".join(
-            [item["title"], item["description"], " ".join(item["style_tags"])]
-        ).lower()
-        score = sum(haystack.count(kw) for kw in keywords)
+        # 3. Score by whole-word keyword overlap across title/description/tags.
+        score = _relevance_score(item, keywords)
 
         # 4. Drop listings with no keyword relevance.
         if score > 0:

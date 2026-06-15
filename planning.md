@@ -76,7 +76,7 @@ None — the agent uses exactly the three required tools.
 
 The loop is a fixed three-step pipeline with an early-exit error branch. It does not loop indefinitely — it runs each stage once, in order, gated by the result of the previous stage.
 
-1. **Parse the query.** Extract `description` (keywords), `size` (or `None`), and `max_price` (or `None`) from the user's natural-language input. Store these in session state.
+1. **Parse the query.** Extract `description` (keywords), `size` (or `None`), and `max_price` (or `None`) from the user's natural-language input, and store them in `session["parsed"]`. **Parsing is done with regex, not an LLM** — the targets are simple bounded patterns (a "under $N"/"$N" price phrase and a "size X" phrase), so a deterministic parser is faster, free, and easy to unit-test. Filler words ("looking for a", etc.) are stripped from the description, and a stopword list keeps them out of relevance scoring.
 2. **Call `search_listings(description, size, max_price)`.**
    - **If `results == []`:** set `session["error"]` to a specific message telling the user what to loosen, and `return session` immediately. Do **not** call `suggest_outfit` or `create_fit_card`.
    - **If `results` is non-empty:** set `session["search_results"] = results` and `session["selected_item"] = results[0]` (top relevance match), then continue.
